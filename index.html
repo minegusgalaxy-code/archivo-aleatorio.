@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>Archivo aleatorio de Internet</title>
+  <style>
+    :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      padding: 28px 18px; background: #fff; color: #171717;
+    }
+    main { width: min(100%, 620px); text-align: center; }
+    .eyebrow { margin: 0 0 12px; color: #777; font-size: 12px; font-weight: 700; letter-spacing: .16em; }
+    h1 { margin: 0 0 32px; font-size: clamp(26px, 6vw, 42px); letter-spacing: -.04em; }
+    #downloadButton {
+      width: 100%; min-height: 116px; border: 0; border-radius: 13px;
+      padding: 22px 18px; color: #fff; background: #d71920;
+      font-size: clamp(19px, 4.5vw, 27px); font-weight: 800; line-height: 1.25;
+      cursor: pointer; box-shadow: 0 7px 0 #a80f16, 0 13px 28px #d7192026;
+      transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
+    }
+    #downloadButton:hover { background: #c9141c; }
+    #downloadButton:active { transform: translateY(5px); box-shadow: 0 2px 0 #a80f16; }
+    #downloadButton:disabled { opacity: .72; cursor: wait; transform: none; }
+    #status { min-height: 48px; margin: 28px 0 12px; color: #555; font-size: 14px; line-height: 1.55; }
+    #result {
+      display: none; text-align: left; border: 1px solid #e7e7e7; border-radius: 12px;
+      padding: 16px; margin-top: 18px; overflow-wrap: anywhere;
+    }
+    #result.show { display: block; }
+    #result strong { display: block; margin-bottom: 8px; }
+    #result p { margin: 5px 0; color: #555; font-size: 13px; }
+    a { color: #b51219; }
+    #fallbackLink { display: none; margin-top: 12px; font-weight: 700; }
+    #fallbackLink.show { display: inline-block; }
+    .notice { margin: 28px auto 0; max-width: 550px; color: #888; font-size: 12px; line-height: 1.55; }
+    .notice strong { color: #666; }
+    .small { color: #999; font-size: 11px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">INTERNET ARCHIVE · RANDOM FILE FINDER</p>
+    <h1>¿Qué archivo tocará hoy?</h1>
+    <button id="downloadButton" type="button">PULSA PARA DESCARGAR UN ARCHIVO<br><span>ALEATORIO DE INTERNET 🌍</span></button>
+    <div id="status" role="status" aria-live="polite">Cada clic busca un archivo distinto en el catálogo público de Internet Archive.</div>
+    <section id="result" aria-live="polite">
+      <strong id="fileName"></strong>
+      <p id="fileDetails"></p>
+      <p id="itemDetails"></p>
+      <p><a id="itemLink" target="_blank" rel="noopener noreferrer">Ver elemento en Internet Archive</a></p>
+      <a id="fallbackLink" target="_blank" rel="noopener noreferrer">Descargar archivo manualmente</a>
+    </section>
+    <p class="notice"><strong>Importante:</strong> los archivos vienen de aportaciones públicas de terceros y no están garantizados como seguros. Se excluyen extensiones ejecutables conocidas y se limita el tamaño a 500 MB, pero un ZIP u otro archivo comprimido podría contener programas. Analiza los archivos antes de abrirlos.</p>
+    <p class="small">La selección es aleatoria entre resultados accesibles de búsqueda de Internet Archive; no representa una selección matemática uniforme de todo Internet.</p>
+  </main>
+
+<script>
+(() => {
+  'use strict';
+  const API = 'https://archive.org';
+  const MAX_BYTES = 500_000_000;
+  const SEARCH_ROWS = 60;
+  const MAX_SEARCH_START = 9900; // Advanced Search pagina hasta los primeros 10.000 resultados.
+  const BLOCKED_EXTENSIONS = new Set([
+    'exe','msi','msp','mst','com','scr','pif','dll','sys','drv','ocx','cpl',
+    'bat','cmd','ps1','psm1','vbs','vbe','wsf','wsh','hta','sh','bash','zsh','fish',
+    'command','app','dmg','pkg','apk','aab','deb','rpm','run','elf','so','dylib',
+    'jar','class','war','ear','wasm','reg','lnk','desktop','hta','scf','gadget',
+    'js','mjs','cjs','html','htm','xhtml','svg'
+  ]);
+  const BLOCKED_FORMAT_WORDS = /windows executable|dos executable|elf executable|shell script|batch file|windows installer|android package|java archive|mac os.*(app|installer)|linux package/i;
+  const button = document.getElementById('downloadButton');
+  const status = document.getElementById('status');
+  const result = document.getElementById('result');
+  const fileName = document.getElementById('fileName');
+  const fileDetails = document.getElementById('fileDetails');
+  const itemDetails = document.getElementById('itemDetails');
+  const itemLink = document.getElementById('itemLink');
+  const fallbackLink = document.getElementById('fallbackLink');
+
+  const seenItems = new Set();
+  const seenFiles = new Set();
+
+  function randomInt(max) { return Math.floor(Math.random() * max); }
+  function setStatus(message) { status.textContent = message; }
+  function bytesLabel(bytes) {
+    const mb = bytes / (1024 * 1024);
+    return mb >= 1 ? `${mb.toFixed(2)} MB` : `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  function extOf(name) {
+    const base = String(name || '').split('/').pop();
+    const dot = base.lastIndexOf('.');
+    return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+  }
+  function isEligible(file) {
+    if (!file || !file.name || file.source === 'metadata' || file.private === 'true' || file.private === true) return false;
+    const name = String(file.name);
+    const lower = name.toLowerCase();
+    if (lower.startsWith('__ia_thumb') || lower.endsWith('_meta.xml') || lower.endsWith('_files.xml')) return false;
+    const ext = extOf(name);
+    if (BLOCKED_EXTENSIONS.has(ext)) return false;
+    if (BLOCKED_FORMAT_WORDS.test(String(file.format || ''))) return false;
+    const size = Number(file.size);
+    if (!Number.isFinite(size) || size <= 0 || size > MAX_BYTES) return false;
+    return true;
+  }
+  async function getJson(url, timeoutMs = 18000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { signal: controller.signal, credentials: 'omit', cache: 'no-store' });
+      if (!response.ok) throw new Error(`Respuesta HTTP ${response.status}`);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async function searchRandomItems() {
+    const params = new URLSearchParams();
+    params.set('q', 'identifier:*');
+    params.set('rows', '1');
+    params.set('output', 'json');
+    params.append('fl[]', 'identifier');
+    const countData = await getJson(`${API}/advancedsearch.php?${params}`);
+    const total = Number(countData?.response?.numFound || 0);
+    if (!total) throw new Error('La búsqueda no devolvió elementos.');
+
+    const maximumStart = Math.max(0, Math.min(MAX_SEARCH_START, total - SEARCH_ROWS));
+    const start = maximumStart ? randomInt(maximumStart + 1) : 0;
+    params.set('rows', String(SEARCH_ROWS));
+    params.set('start', String(start));
+    params.delete('fl[]');
+    params.append('fl[]', 'identifier');
+    params.append('fl[]', 'title');
+    params.append('fl[]', 'mediatype');
+    const data = await getJson(`${API}/advancedsearch.php?${params}`);
+    return Array.isArray(data?.response?.docs) ? data.response.docs : [];
+  }
+  function makeDownloadUrl(identifier, name) {
+    const safeId = encodeURIComponent(identifier);
+    const safePath = String(name).split('/').map(encodeURIComponent).join('/');
+    return `${API}/download/${safeId}/${safePath}`;
+  }
+  async function chooseCandidate() {
+    for (let attempt = 1; attempt <= 9; attempt++) {
+      setStatus(`Buscando en el catálogo de Internet Archive… intento ${attempt}/9`);
+      const docs = await searchRandomItems();
+      const fresh = docs.filter(item => item?.identifier && !seenItems.has(item.identifier));
+      if (!fresh.length) continue;
+      const item = fresh[randomInt(fresh.length)];
+      seenItems.add(item.identifier);
+      const metadata = await getJson(`${API}/metadata/${encodeURIComponent(item.identifier)}`);
+      const candidates = (Array.isArray(metadata.files) ? metadata.files : []).filter(isEligible);
+      const shuffled = candidates.sort(() => Math.random() - 0.5);
+      const chosen = shuffled.find(file => !seenFiles.has(`${item.identifier}/${file.name}`));
+      if (!chosen) continue;
+      return { item, metadata, file: chosen };
+    }
+    throw new Error('No encontré un archivo elegible en los intentos disponibles. Prueba otra vez.');
+  }
+  button.addEventListener('click', async () => {
+    if (button.disabled) return;
+    // Abrir una pestaña durante el clic del usuario evita que el navegador bloquee la descarga
+    // después de las consultas asíncronas. Si el navegador la bloquea, se mostrará un enlace.
+    let downloadTab = null;
+    try { downloadTab = window.open('about:blank', '_blank'); } catch (_) { downloadTab = null; }
+    button.disabled = true;
+    button.textContent = 'BUSCANDO UN ARCHIVO…';
+    result.classList.remove('show');
+    fallbackLink.classList.remove('show');
+    try {
+      const selected = await chooseCandidate();
+      const { item, metadata, file } = selected;
+      const url = makeDownloadUrl(item.identifier, file.name);
+      seenFiles.add(`${item.identifier}/${file.name}`);
+      const size = Number(file.size);
+      const title = metadata.metadata?.title || item.title || item.identifier;
+      const mediatype = metadata.metadata?.mediatype || item.mediatype || 'sin categoría indicada';
+      fileName.textContent = file.name;
+      fileDetails.textContent = `${file.format || extOf(file.name) || 'Formato no indicado'} · ${bytesLabel(size)}`;
+      itemDetails.textContent = `Elemento: ${title} · Categoría: ${mediatype}`;
+      itemLink.href = `${API}/details/${encodeURIComponent(item.identifier)}`;
+      fallbackLink.href = url;
+      result.classList.add('show');
+      setStatus('Archivo encontrado. La descarga debería comenzar en una pestaña nueva.');
+      if (downloadTab && !downloadTab.closed) {
+        downloadTab.location.href = url;
+      } else {
+        fallbackLink.classList.add('show');
+        setStatus('Archivo encontrado. El navegador bloqueó la pestaña automática; pulsa “Descargar archivo manualmente”.');
+      }
+    } catch (error) {
+      if (downloadTab && !downloadTab.closed) downloadTab.close();
+      console.error(error);
+      setStatus(error.name === 'AbortError'
+        ? 'La consulta tardó demasiado. Comprueba tu conexión y vuelve a intentarlo.'
+        : (error.message || 'No se pudo obtener un archivo. Inténtalo de nuevo.'));
+    } finally {
+      button.disabled = false;
+      button.innerHTML = 'PULSA PARA DESCARGAR UN ARCHIVO<br><span>ALEATORIO DE INTERNET 🌍</span>';
+    }
+  });
+})();
+</script>
+</body>
+</html>
